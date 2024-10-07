@@ -12,7 +12,7 @@ fn main() {
 
     // parse file using guesser
     let mut parser = IFFParser::file(&args[1]).unwrap();
-    parser.parse(IFFParser::guesser).unwrap();
+    parser.parse(IFFParser::heuristic).unwrap();
 
     println!("{:#08} EOF{}", parser.position().unwrap(), " ".repeat(40));
 }

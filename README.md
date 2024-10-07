@@ -7,3 +7,18 @@
 [Interchange File Format] parser implemented using the `chunk-parser` pattern.
 
 [Interchange File Format]: https://en.wikipedia.org/wiki/Interchange_File_Format
+
+## Usage
+
+`iff-parser` implements a small heuristic function capable of parsing any
+arbitrary IFF format:
+
+```
+$ iff-guess /path/to/noise.aiff
+
+00000000 FORM -> AIFC                   135222 bytes
+00000012   FVER                              4 bytes
+00000024   COMM                             24 bytes
+00000056   SSND                         135166 bytes
+00135230 EOF  
+```

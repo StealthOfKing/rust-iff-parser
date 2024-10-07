@@ -5,53 +5,63 @@
 
 use chunk_parser::prelude::*;
 
+use std::io::{Read, Seek};
+
 //------------------------------------------------------------------------------
 
+/// IFF parser implementation.
 #[chunk_parser]
 pub struct IFFParser;
 
-/// IFF parser implementation.
-impl<R> Parser for IFFParser<R> where R: std::io::Read + std::io::Seek {
-    type Header = (TypeId, i32);
-    type Size = i32;
+/// IFF header layout.
+pub struct IFFHeader {
+    typeid: TypeId,
+    size: u32
+}
 
-    fn read_header(&mut self) -> chunk_parser::Result<Self::Header> {
-        Ok((self.read()?, self.read_be()?))
+/// IFF header parser.
+impl<R: Read> HeaderParser<IFFHeader> for IFFParser<R> {
+    fn header(&mut self) -> chunk_parser::Result<IFFHeader> {
+        Ok( IFFHeader { typeid: self.read()?, size: self.read_be()? })
     }
+}
 
-    fn guesser(&mut self, ( typeid, size ): &Self::Header) -> chunk_parser::Result<i32> {
+impl<R: Read + Seek> IFFParser<R> {
+    /// Heuristic parser for nested IFF file structures.
+    pub fn heuristic(&mut self, &IFFHeader { typeid, size }: &IFFHeader) -> chunk_parser::Result<u64> {
         let pos = self.position()?;
         let depth = self.depth();
 
         println!(
             "{:#08} {}{} {}{: >16} bytes", self.position()? - 8,
-            " ".repeat(depth * 2), FourCC(*typeid),
-            " ".repeat(16 - depth * 2), size
+            " ".repeat(depth as usize * 2), FourCC(typeid),
+            " ".repeat(16 - depth as usize * 2), size
         );
 
-        // if the next 4 bytes are a valid fourcc, it could be a container like FORM
-        let subid = self.read::<TypeId>()?;
-        let container = FourCC(subid).is_valid() // the next 8 bytes will need to be a valid header also
-                     && FourCC(self.peek::<TypeId>()?).is_valid();
-                     //&& self.peek::<TypeId>(4)? < size - 8
+        // heuristically identify nested groups
+        if size >= 12 { // need at least 12 bytes for a group
+            let subid = FourCC(self.read::<TypeId>()?); // if the next 4 bytes are a valid fourcc, it could be a container like FORM
+            let next_id = FourCC(self.read::<TypeId>()?); // the next 8 bytes will need to be a valid chunk header
+            let next_len: u32 = self.read_be()?; // the size can be validated too
 
-        if container {
-            println!("\x1B[A\x1B[{}C-> {}", 14 + depth * 2, FourCC(subid));
-            // presume to be a FORM-like list of subchunks
-            if let Err(_) = self.parse_subchunks(IFFParser::guesser, size - 4) {
-                // rewind the parser on error
-                println!("\x1B[A\x1B[{}C       ", 14 + depth * 2);
-                print!("\x1B[0G");
-                self.seek(pos + *size)?;
+            if subid.is_valid() && next_id.is_valid() && next_len < size - 8 { // presume to be a FORM-like list of subchunks
+                println!("\x1B[A\x1B[{}C-> {}", 14 + depth * 2, subid);
+                self.rewind(8)?;
+                if let Err(_) = self.subchunks(IFFParser::heuristic, size as u64 - 4) { // rewind the parser on error
+                    println!("\x1B[A\x1B[{}C       ", 14 + depth * 2);
+                    print!("\x1B[0G");
+                    self.seek(pos + size as u64)?;
+                }
+            } else { // unknown chunk, the only thing left to do is skip
+                self.skip(size as u64 - 12)?;
             }
-        } else {
-            // unknown chunk, the only thing left to do is skip
-            self.skip(size - 4)?;
+        } else { // chunk too small to contain a group
+            self.skip(size as u64)?;
         }
 
         // iff aligns chunks to even offsets
-        if size % 2 == 0 { Ok(*size) }
-        else { self.skip(1)?; Ok(*size + 1) }
+        if size % 2 == 0 { Ok(size as u64) }
+        else { self.skip(1)?; Ok(size as u64 + 1) }
     }
 }
 
@@ -59,7 +69,7 @@ impl<R> Parser for IFFParser<R> where R: std::io::Read + std::io::Seek {
 
 pub mod prelude {
     pub use chunk_parser::prelude::*;
-    pub use super::IFFParser;
+    pub use super::{IFFParser, IFFHeader};
 }
 
 //==============================================================================
@@ -83,15 +93,14 @@ mod tests {
 
     #[test]
     fn iff() {
-        let mut iff = IFFParser::buf(DATA);
-        iff.parse(|parser, ( typeid, size )| {
+        let mut iff = IFFParser::cursor(DATA);
+        iff.parse(|parser, &IFFHeader { typeid, size }| {
             assert_eq!(parser.depth(), 0);
-            match typeid {
-                b"FORM" => parser.expect(b"TEST")?.skip(size - 4),
-                b"TEST" => parser.skip(*size),
+            match &typeid {
+                b"FORM" => parser.skip(size as u64),
+                b"TEST" => parser.skip(size as u64),
                 _ => Err(chunk_parser::Error::ParseError)
-            }?;
-            Ok(*size)
+            }
         }).unwrap();
     }
 }
